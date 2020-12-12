@@ -26,12 +26,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         pictureDestinationProvider = ContentResolverUriProvider(
-            activityProvider = ActivityProvider(this),
-            contentValuesGenerator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                AfterQPictureContentValuesGenerator()
-            } else {
-                BeforeQPictureContentValuesGenerator()
-            }
+            contentResolver = contentResolver
         )
         start_camera_btn.setOnClickListener {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
@@ -51,6 +46,8 @@ class MainActivity : AppCompatActivity() {
                 Intent.createChooser(
                         Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
                             putExtra(MediaStore.EXTRA_OUTPUT, photoUri)
+                            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         },
                         applicationInfo.name
                 ),
@@ -59,7 +56,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun createImageUri(): Uri? {
-        val newImageUri = pictureDestinationProvider?.providePictureDestination()
+        val newImageUri = pictureDestinationProvider?.provideDestination()
         return newImageUri
     }
 

@@ -1,10 +1,10 @@
 package com.valerasetrakov.externalcamerasample
 
+import android.content.ContentResolver
 import android.content.ContentValues
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
-import android.os.Environment.MEDIA_MOUNTED
 import android.provider.MediaStore
 import androidx.annotation.CallSuper
 import androidx.annotation.RequiresApi
@@ -13,42 +13,43 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 /**
- * Интерфейс для предоставления расположения нового изображения
+ * Интерфейс для генерации [Uri]
  */
 interface PictureDestinationProvider {
     /**
-     * @return content [Uri], который будет указывать на данные о фото в таблице
+     * @return [Uri] изображения
      */
-    fun providePictureDestination(): Uri
+    fun provideDestination(): Uri
+
+    /**
+     * Метод удаления [uri]
+     */
+    fun deleteDestination(uri: Uri)
 }
 
 /**
- * Реализация [PictureDestinationProvider], которая будет предоставлять [Uri] нового изображения в
- * таблице, предоставляемой через [pictureTableProvider] и с параметрами, генерируемыми через
- * [contentValuesGenerator]
+ * Реализация [PictureDestinationProvider] для генерации [Uri] с помощью [contentResolver]
+ * Таблица определяется через [pictureTableProvider]
+ * Значения для столбцов задаются через [contentValuesGenerator]
  */
-open class ContentResolverUriProvider(
-    private val activityProvider: ActivityProvider,
+class ContentResolverUriProvider(
+    private val contentResolver: ContentResolver,
     private val pictureTableProvider: PictureTableProvider = PictureTableProvider,
     private val contentValuesGenerator: PictureContentValuesGenerator = PictureContentValuesGenerator
 ): PictureDestinationProvider {
 
-    private val currentActivity get() = activityProvider.get()
-
-    override fun providePictureDestination(): Uri {
-        val values = createContentValues()
-        return currentActivity.contentResolver.insert(
+    override fun provideDestination(): Uri {
+        return contentResolver.insert(
             pictureTableProvider.providePictureTable(),
-            values
+            contentValuesGenerator.generateContentValues()
         ) ?: error("Failed generate image uri for new photo")
     }
 
-    /**
-     * @return [ContentValues] для создания [Uri] для нового изображения
-     */
-    @CallSuper
-    protected open fun createContentValues(): ContentValues {
-        return contentValuesGenerator.generateContentValues()
+    override fun deleteDestination(uri: Uri) {
+        val countOfDeletionRows = contentResolver.delete(uri, null, null)
+        if (countOfDeletionRows <= 0) {
+            error("Uri $uri delete failed")
+        }
     }
 }
 
@@ -70,7 +71,7 @@ interface PictureContentValuesGenerator {
  * либо последующих
  */
 @RequiresApi(Build.VERSION_CODES.Q)
-open class AfterQPictureContentValuesGenerator(
+open class RelativePathPictureContentValuesGenerator(
     private val pictureNameGenerator: PictureNameGenerator = PictureNameGenerator,
     private val pictureFolderGenerator: PictureFolderGenerator = PictureFolderGenerator
 ): PictureContentValuesGenerator {
@@ -92,13 +93,18 @@ open class AfterQPictureContentValuesGenerator(
 }
 
 /**
- * Реализация [BeforeQPictureContentValuesGenerator] для версий Android до [Build.VERSION_CODES.Q],
+ * Реализация [PictureContentValuesGenerator] для версий Android до [Build.VERSION_CODES.Q],
  * для обратной совместимости
  */
-open class BeforeQPictureContentValuesGenerator(
+@Deprecated(
+    message = "Don't use this class on Android 11 and higher, " +
+            "instead use {@link RelativePathPictureContentValuesGenerator} " +
+            "or create your own implementation of {@link PictureContentValuesGenerator}"
+)
+class AbsolutePathContentValuesGenerator(
     private val pictureNameGenerator: PictureNameGenerator = PictureNameGenerator,
     private val pictureFolderGenerator: PictureFolderGenerator = PictureFolderGenerator,
-    protected val pictureBaseDirectoryProvider: PictureBaseDirectoryProvider = PictureBaseDirectoryProvider
+    private val pictureBaseDirectoryProvider: PictureBaseDirectoryProvider = DefaultPictureBaseDirectoryProvider
 ): PictureContentValuesGenerator {
 
     override fun generateContentValues(): ContentValues {
@@ -108,26 +114,37 @@ open class BeforeQPictureContentValuesGenerator(
         }
     }
 
-    protected open fun generateAbsolutePathToPicture(): String {
-        val pictureBaseDirectory = getBaseDirectory()
+    private fun generateAbsolutePathToPicture(): String {
+        val pictureBaseDirectory = pictureBaseDirectoryProvider.provideBaseDirectory()
         val pictureRelativePath = pictureFolderGenerator.generatePictureFolderPath()
         val pictureName = pictureNameGenerator.generatePictureName()
         val pictureDirection = File(pictureBaseDirectory, pictureRelativePath)
+        if (!pictureDirection.exists()) {
+            if (!pictureDirection.mkdirs()) {
+                throw error("Failed to create directory ${pictureDirection.absolutePath}")
+            }
+        }
         val pictureFile = File(pictureDirection, pictureName)
         return pictureFile.absolutePath
     }
 
-    private fun getBaseDirectory(): File {
-        val baseDirectory = pictureBaseDirectoryProvider.provideBaseDirectory()
-        val externalStorageState = Environment.getExternalStorageState(baseDirectory)
-        if (externalStorageState != MEDIA_MOUNTED) {
-            error("Base directory for saving picture need to be external storage")
+    /**
+     * Интерфейс для предоставления базой директории для нового изображения
+     */
+    interface PictureBaseDirectoryProvider {
+        fun provideBaseDirectory(): File
+    }
+
+    @Deprecated(
+        message = "On Android 10 (API level 29) and higher need use {@link Context#getExternalFilesDir(String)} " +
+                "or use {@link RelativePathPictureContentValuesGenerator}"
+    )
+    private object DefaultPictureBaseDirectoryProvider: PictureBaseDirectoryProvider {
+        override fun provideBaseDirectory(): File {
+            return Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
         }
-        return baseDirectory
     }
 }
-
-
 
 /**
  * Интерфейс для генерации имени нового изображения
@@ -147,7 +164,7 @@ interface PictureNameGenerator {
 }
 
 /**
- * Интерфейс для генерации относительного пути до директории изображения
+ * Интерфейс для генерации относительного пути до нового изображения
  */
 interface PictureFolderGenerator {
     /**
@@ -158,18 +175,6 @@ interface PictureFolderGenerator {
     }
 
     companion object: PictureFolderGenerator
-}
-
-/**
- * Интерфейс для предоставления базой директории для нового изображения
- */
-interface PictureBaseDirectoryProvider {
-
-    fun provideBaseDirectory(): File {
-        return Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
-    }
-
-    companion object: PictureBaseDirectoryProvider
 }
 
 /**
